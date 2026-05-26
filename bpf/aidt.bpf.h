@@ -58,6 +58,7 @@ typedef struct aidt_mcp_call_event {
     u32 pid;
     u32 tgid;
     u64 cookie;
+    u32 fd;
 } aidt_mcp_call_event_t;
 
 #endif /* __EVENTS_H__ */

@@ -52,6 +52,7 @@ pub struct AidtMCPCallEvent {
     pub pid: u32,
     pub tgid: u32,
     pub cookie: u64,
+    pub fd: u32,
 }
 
 pub fn handle_event(data: &[u8]) -> i32 {
@@ -134,7 +135,11 @@ pub fn handle_event(data: &[u8]) -> i32 {
                 return 0;
             }
             let ae = unsafe { &*(payload_ptr as *const AidtMCPCallEvent) };
-            log::info!("[MCP_CALL] PID: {}, TGID: {}, Cookie: {}", ae.pid, ae.tgid, ae.cookie);
+            
+            // Resolve the receiver of this tool call invocation
+            let receivers = crate::proc::resolve_receiver(ae.pid, ae.fd).unwrap_or_default();
+            
+            log::info!("[MCP_CALL Sender] PID: {}, TGID: {}, Cookie: {}, Target FD: {}, Receiver PIDs: {:?}", ae.pid, ae.tgid, ae.cookie, ae.fd, receivers);
         }
     }
 

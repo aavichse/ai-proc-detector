@@ -105,6 +105,17 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     })?;
 
+    let fm = proc::list_ipc_sock_pid_fds_filtered(|entry| entry.path.contains("mcp"))?;
+    if !fm.is_empty() {
+        log::info!("Current IPC socket PID-FD map:");
+        for ipe in fm {
+            log::info!("PID: {}, PATH: {:?}, INODE: {}, FD: {}", ipe.pid, ipe.path, ipe.inode, ipe.fd);
+        }
+    } else {
+        log::info!("No IPC socket PID-FD mappings found.");
+    }   
+    
+
     log::info!("Waiting for events (Ctrl+C to stop)...");
     while running.load(Ordering::SeqCst) && rb.poll(std::time::Duration::from_millis(100)).is_ok() {}
 

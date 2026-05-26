@@ -529,43 +529,15 @@ mark_seen:
     return TC_ACT_OK;
 }
 
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 10240);
-    __type(key, u32);
-    __type(value, const char *);
-} active_reads SEC(".maps");
-
-SEC("tracepoint/syscalls/sys_enter_read")
-int aidt_sys_enter_read(struct trace_event_raw_sys_enter *ctx)
+static __always_inline void check_mcp_payload(int fd, const char *buf, size_t count)
 {
-    int fd = (int)ctx->args[0];
-    if (fd != 0) return 0; // only stdin fd 0
-
-    const char *buf = (const char *)ctx->args[1];
-    u32 tid = bpf_get_current_pid_tgid();
-    bpf_map_update_elem(&active_reads, &tid, &buf, BPF_ANY);
-    return 0;
-}
-
-SEC("tracepoint/syscalls/sys_exit_read")
-int aidt_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
-{
-    u32 tid = bpf_get_current_pid_tgid();
-    const char **buf_p = bpf_map_lookup_elem(&active_reads, &tid);
-    if (!buf_p) return 0;
-
-    const char *buf = *buf_p;
-    bpf_map_delete_elem(&active_reads, &tid);
-
-    long ret = ctx->ret;
-    if (ret < 21 || !buf) return 0;
+    if (count < 21 || !buf) return;
 
     char local_buf[128];
-    size_t copy_len = ret > sizeof(local_buf) - 1 ? sizeof(local_buf) - 1 : ret;
+    size_t copy_len = count > sizeof(local_buf) - 1 ? sizeof(local_buf) - 1 : count;
 
     if (bpf_probe_read_user(local_buf, copy_len, buf) != 0) {
-        return 0;
+        return;
     }
     local_buf[copy_len] = '\0';
     
@@ -592,7 +564,7 @@ int aidt_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
         u32 size = sizeof(aidt_event_t) + sizeof(aidt_mcp_call_event_t);
 
         e = bpf_ringbuf_reserve(&rb_events, size, 0);
-        if (!e) return 0;
+        if (!e) return;
 
         e->type = EVENT_TYPE_MCP_CALL;
         e->len = sizeof(aidt_mcp_call_event_t);
@@ -601,9 +573,31 @@ int aidt_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
         ae->pid  = SELF_PID;
         ae->tgid = SELF_TGID;
         ae->cookie = get_cookie(task);
+        ae->fd = fd;
 
-        bpf_printk("MCP call read on stdin pid=%d", ae->pid);
+        bpf_printk("MCP call written on fd=%d pid=%d", fd, ae->pid);
         bpf_ringbuf_submit(e, 0);
     }
+}
+
+SEC("tracepoint/syscalls/sys_enter_write")
+int aidt_sys_enter_write(struct trace_event_raw_sys_enter *ctx)
+{
+    int fd = (int)ctx->args[0];
+    const char *buf = (const char *)ctx->args[1];
+    size_t count = (size_t)ctx->args[2];
+
+    check_mcp_payload(fd, buf, count);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_enter_sendto")
+int aidt_sys_enter_sendto(struct trace_event_raw_sys_enter *ctx)
+{
+    int fd = (int)ctx->args[0];
+    const char *buf = (const char *)ctx->args[1];
+    size_t count = (size_t)ctx->args[2];
+
+    check_mcp_payload(fd, buf, count);
     return 0;
 }
