@@ -13,6 +13,7 @@ typedef enum aidt_event_type {
     EVENT_TYPE_PROCESS_EXIT,
     EVENT_TYPE_CONNECT,
     EVENT_TYPE_SNI,
+    EVENT_TYPE_MCP_CALL,
 } aidt_event_type_e;
 
 typedef enum aidt_conn_direction {
@@ -52,5 +53,11 @@ typedef struct aidt_sni_event {
     u64 cookie;     // Process start time of the connector
     char sni[AIDET_SNI_LEN];
 } aidt_sni_event_t;
+
+typedef struct aidt_mcp_call_event {
+    u32 pid;
+    u32 tgid;
+    u64 cookie;
+} aidt_mcp_call_event_t;
 
 #endif /* __EVENTS_H__ */

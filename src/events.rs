@@ -8,6 +8,7 @@ pub enum AidtEventType {
     ProcessExit = 1,
     Connection = 2,
     Sni = 3,
+    MCPCall = 4,
 }
 
 #[repr(C)]
@@ -44,6 +45,13 @@ pub struct AidtSniEvent {
     pub pid: u32,
     pub cookie: u64,
     pub sni: [u8; 64],
+}
+
+#[repr(C)]
+pub struct AidtMCPCallEvent {
+    pub pid: u32,
+    pub tgid: u32,
+    pub cookie: u64,
 }
 
 pub fn handle_event(data: &[u8]) -> i32 {
@@ -120,6 +128,13 @@ pub fn handle_event(data: &[u8]) -> i32 {
                 se.pid,
                 sni_str
             );
+        }
+        AidtEventType::MCPCall => {
+            if data.len() < std::mem::size_of::<AidtEvent>() + std::mem::size_of::<AidtMCPCallEvent>() {
+                return 0;
+            }
+            let ae = unsafe { &*(payload_ptr as *const AidtMCPCallEvent) };
+            log::info!("[MCP_CALL] PID: {}, TGID: {}, Cookie: {}", ae.pid, ae.tgid, ae.cookie);
         }
     }
 

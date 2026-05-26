@@ -13,7 +13,7 @@ char LICENSE[] SEC("license") = "GPL";
 
 // Fallback for bpf_loop if using older headers
 #ifndef bpf_loop
-static long (* const bpf_loop_fallback)(__u32 nr_loops, void *callback_fn, void *callback_ctx, __u64 flags) = (void *) 181;
+static long (* const bpf_loop_fallback)(u32 nr_loops, void *callback_fn, void *callback_ctx, u64 flags) = (void *) 181;
 #define bpf_loop bpf_loop_fallback
 #endif
 
@@ -41,8 +41,8 @@ static long (* const bpf_loop_fallback)(__u32 nr_loops, void *callback_fn, void 
 struct {
 	__uint(type, BPF_MAP_TYPE_LRU_HASH);
 	__uint(max_entries, 65536);
-	__type(key, __u32);  // pid
-	__type(value, __u8);
+	__type(key, u32);  // pid
+	__type(value, u8);
 } marked_pids SEC(".maps");
 
 struct {
@@ -60,7 +60,7 @@ static __always_inline u64 get_cookie(struct task_struct *task)
 
 static __always_inline int try_mark_process(u32 pid)
 {
-    __u8 one = 1;
+    u8 one = 1;
     return bpf_map_update_elem(&marked_pids, &pid, &one, BPF_NOEXIST);
 }
 
@@ -100,7 +100,7 @@ report_process_event(aidt_event_type_e type)
 static __always_inline int  UNUSED
 fill_conn_event(aidt_conn_event_t *ce, struct sock *sk, aidt_conn_direction_e direction) 
 {
-	__u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+	u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
 	if (family != AF_INET) return -1;
 
     struct task_struct *task = bpf_get_current_task_btf();
@@ -216,7 +216,7 @@ struct flow_owner {
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
-    __type(key, __u64);
+    __type(key, u64);
     __type(value, struct flow_owner);
 } flow_owners SEC(".maps");
 
@@ -224,19 +224,19 @@ struct {
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
     __uint(max_entries, 65536);
-    __type(key, __u64);
-    __type(value, __u8);
+    __type(key, u64);
+    __type(value, u8);
 } seen_flows SEC(".maps");
 
 // Per-CPU scratch buffer holding the TLS payload copied out of the skb. 
 struct sni_scratch {
-    __u8 buf[MAX_TLS_PEEK];
+    u8 buf[MAX_TLS_PEEK];
 };
 
 struct {
     __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
     __uint(max_entries, 1);
-    __type(key, __u32);
+    __type(key, u32);
     __type(value, struct sni_scratch);
 } sni_scratch_map SEC(".maps");
 
@@ -244,7 +244,7 @@ struct {
 SEC("fentry/tcp_connect")
 int BPF_PROG(aidt_sni_tcp_connect, struct sock *sk)
 {
-    __u64 cookie = bpf_get_socket_cookie(sk);
+    u64 cookie = bpf_get_socket_cookie(sk);
     if (!cookie)
         return 0;
 
@@ -263,7 +263,7 @@ int BPF_PROG(aidt_sni_tcp_connect, struct sock *sk)
 SEC("fentry/tcp_close")
 int BPF_PROG(aidt_sni_tcp_close, struct sock *sk)
 {
-    __u64 cookie = bpf_get_socket_cookie(sk);
+    u64 cookie = bpf_get_socket_cookie(sk);
     if (cookie) {
         bpf_map_delete_elem(&flow_owners, &cookie);
         bpf_map_delete_elem(&seen_flows, &cookie);
@@ -276,8 +276,8 @@ int BPF_PROG(aidt_sni_tcp_close, struct sock *sk)
  * value and `buf_len` is the number of valid bytes copied into it. Every
  * bound is a plain scalar comparison, so it survives helper calls.          */
 
-static __always_inline int load_u8(const __u8 *buf, __u32 buf_len,
-                                    __u32 off, __u8 *out)
+static __always_inline int load_u8(const u8 *buf, u32 buf_len,
+                                    u32 off, u8 *out)
 {
     if (off >= buf_len || off >= MAX_TLS_PEEK)
         return -1;
@@ -291,13 +291,13 @@ static __always_inline int load_u8(const __u8 *buf, __u32 buf_len,
     return 0;
 }
 
-static __always_inline int load_u16(const __u8 *buf, __u32 buf_len,
-                                     __u32 off, __u16 *out)
+static __always_inline int load_u16(const u8 *buf, u32 buf_len,
+                                     u32 off, u16 *out)
 {
-    __u8 hi, lo;
+    u8 hi, lo;
     if (load_u8(buf, buf_len, off, &hi) < 0) return -1;
     if (load_u8(buf, buf_len, off + 1, &lo) < 0) return -1;
-    *out = ((__u16)hi << 8) | lo;
+    *out = ((u16)hi << 8) | lo;
     return 0;
 }
 
@@ -308,28 +308,28 @@ static __always_inline int load_u16(const __u8 *buf, __u32 buf_len,
  * instruction budget. `buf` is a map-value pointer, which (unlike a packet
  * pointer) stays valid across the bpf_loop() helper call. */
 struct walk_ctx {
-    const __u8 *buf;
-    __u32 buf_len;
-    __u32 ext_off;
-    __u32 ext_end;
-    __u32 sni_off;
-    __u16 sni_len;
-    __u8  ech_present;
-    __u8  _pad;
+    const u8 *buf;
+    u32 buf_len;
+    u32 ext_off;
+    u32 ext_end;
+    u32 sni_off;
+    u16 sni_len;
+    u8  ech_present;
+    u8  _pad;
 };
 
 // One TLS extension per call. Return 1 to stop the walk, 0 to continue.
-static long walk_ext_cb(__u32 idx, void *ctx_)
+static long walk_ext_cb(u32 idx, void *ctx_)
 {
     struct walk_ctx *ctx = ctx_;
     if (ctx->ext_off + 4 > ctx->ext_end)
         return 1;
 
-    __u16 ext_type, ext_len;
+    u16 ext_type, ext_len;
     if (load_u16(ctx->buf, ctx->buf_len, ctx->ext_off, &ext_type) < 0) return 1;
     if (load_u16(ctx->buf, ctx->buf_len, ctx->ext_off + 2, &ext_len) < 0) return 1;
 
-    __u32 body = ctx->ext_off + 4;
+    u32 body = ctx->ext_off + 4;
     if (body + ext_len > ctx->ext_end)
         return 1;
 
@@ -337,8 +337,8 @@ static long walk_ext_cb(__u32 idx, void *ctx_)
         ctx->ech_present = 1;
 
     if (ext_type == EXT_SERVER_NAME && ctx->sni_len == 0 && ext_len >= 5) {
-        __u16 list_len, name_len;
-        __u8 name_type;
+        u16 list_len, name_len;
+        u8 name_type;
 
         if (load_u16(ctx->buf, ctx->buf_len, body, &list_len) == 0 &&
             (list_len + 2 <= ext_len) &&
@@ -358,12 +358,12 @@ static long walk_ext_cb(__u32 idx, void *ctx_)
 
 // Parse a TLS record starting at offset 0 of `buf`; on success set *sni_off
 // sni_len to the SNI host name's location within `buf`.
-static __attribute__((noinline)) int find_sni(const __u8 *buf, __u32 buf_len,
-                                     __u32 *sni_off, __u16 *sni_len,
-                                     __u8 *ech_present)
+static __attribute__((noinline)) int find_sni(const u8 *buf, u32 buf_len,
+                                     u32 *sni_off, u16 *sni_len,
+                                     u8 *ech_present)
 {
-    __u8 rec_type, hs_type, sid_len, cm_len;
-    __u16 rec_ver, cs_len, ext_total;
+    u8 rec_type, hs_type, sid_len, cm_len;
+    u16 rec_ver, cs_len, ext_total;
 
     if (load_u8(buf, buf_len, 0, &rec_type) < 0) return -1;
     if (rec_type != TLS_HANDSHAKE) return -1;
@@ -373,7 +373,7 @@ static __attribute__((noinline)) int find_sni(const __u8 *buf, __u32 buf_len,
     if (load_u8(buf, buf_len, 5, &hs_type) < 0) return -1;
     if (hs_type != TLS_CLIENT_HELLO) return -1;
 
-    __u32 p = 5 + 38;            /* TLS record hdr + hs_type+hs_len+ver+random */
+    u32 p = 5 + 38;            /* TLS record hdr + hs_type+hs_len+ver+random */
     if (load_u8(buf, buf_len, p, &sid_len) < 0) return -1;
     p += 1 + sid_len;
     if (load_u16(buf, buf_len, p, &cs_len) < 0) return -1;
@@ -406,20 +406,20 @@ int aidt_sni_egress(struct __sk_buff *skb)
 
     if (data + sizeof(struct ethhdr) > data_end) return TC_ACT_OK;
     const struct ethhdr *eth = data;
-    __u16 h_proto = eth->h_proto;
-    __u32 l3_off = sizeof(struct ethhdr);
+    u16 h_proto = eth->h_proto;
+    u32 l3_off = sizeof(struct ethhdr);
 
-    __u8  ip_proto;
-    __u32 l4_off;
+    u8  ip_proto;
+    u32 l4_off;
 
     if (h_proto == bpf_htons(ETH_P_IP)) {
         if (data + l3_off + sizeof(struct iphdr) > data_end) return TC_ACT_OK;
         const struct iphdr *iph = data + l3_off;
         if (iph->version != 4) return TC_ACT_OK;
-        __u8 ihl = iph->ihl;
+        u8 ihl = iph->ihl;
         if (ihl < 5) return TC_ACT_OK;
         ip_proto = iph->protocol;
-        l4_off = l3_off + ((__u32)ihl * 4);
+        l4_off = l3_off + ((u32)ihl * 4);
     } else if (h_proto == bpf_htons(ETH_P_IPV6)) {
         return TC_ACT_OK;  // TODO: support IPv6
     } else {
@@ -430,7 +430,7 @@ int aidt_sni_egress(struct __sk_buff *skb)
 
     if (data + l4_off + sizeof(struct tcphdr) > data_end) return TC_ACT_OK;
     const struct tcphdr *tcph = data + l4_off;
-    __u16 dport = bpf_ntohs(tcph->dest);
+    u16 dport = bpf_ntohs(tcph->dest);
 
     // Only peek at likely TLS traffic to save CPU and avoid false positives
     // on non-TLS flows. We might miss TLS on non-standard ports, but that's
@@ -438,27 +438,27 @@ int aidt_sni_egress(struct __sk_buff *skb)
     // parsing to track TLS flows across packets).
     if (dport != 443 && dport != 8443) return TC_ACT_OK;
 
-    __u8 doff = tcph->doff;
+    u8 doff = tcph->doff;
     if (doff < 5) return TC_ACT_OK;
-    __u32 payload_off = l4_off + ((__u32)doff * 4);
+    u32 payload_off = l4_off + ((u32)doff * 4);
 
     // From here on only scalars and map memory are used; packet pointers
     // are no longer touched, so the helper calls below are harmless.
-    __u32 pkt_len = skb->len;
+    u32 pkt_len = skb->len;
     if (payload_off >= pkt_len) return TC_ACT_OK;
 
-    __u64 cookie = bpf_get_socket_cookie(skb);
+    u64 cookie = bpf_get_socket_cookie(skb);
     if (cookie) {
-        __u8 *seen = bpf_map_lookup_elem(&seen_flows, &cookie);
+        u8 *seen = bpf_map_lookup_elem(&seen_flows, &cookie);
         if (seen) return TC_ACT_OK;
     }
 
-    __u32 zero = 0;
+    u32 zero = 0;
     struct sni_scratch *scratch = bpf_map_lookup_elem(&sni_scratch_map, &zero);
     if (!scratch)
         goto mark_seen;
 
-    __u32 buf_len = pkt_len - payload_off;
+    u32 buf_len = pkt_len - payload_off;
     if (buf_len > MAX_TLS_PEEK)
         buf_len = MAX_TLS_PEEK;
 
@@ -476,9 +476,9 @@ int aidt_sni_egress(struct __sk_buff *skb)
     if (bpf_skb_load_bytes(skb, payload_off, scratch->buf, buf_len) < 0)
         goto mark_seen;
 
-    __u32 sni_off = 0;
-    __u16 sni_len = 0;
-    __u8  ech_present = 0;
+    u32 sni_off = 0;
+    u16 sni_len = 0;
+    u8  ech_present = 0;
     if (find_sni(scratch->buf, buf_len, &sni_off, &sni_len, &ech_present) < 0) {
         goto mark_seen;
 	}
@@ -505,16 +505,16 @@ int aidt_sni_egress(struct __sk_buff *skb)
         }
     }
 
-    __u16 n = sni_len;
+    u16 n = sni_len;
     if (n > sizeof(pe->sni) - 1)
         n = sizeof(pe->sni) - 1;
 
-    for (__u16 i = 0; i < sizeof(pe->sni) - 1; i++) {
+    for (u16 i = 0; i < sizeof(pe->sni) - 1; i++) {
         if (i >= n)
             break;
         // Using a mask ensures the index is always within [0, MAX_TLS_PEEK-1],
         // which the verifier can easily prove, avoiding out-of-bounds errors.
-        __u32 idx = (sni_off + i) & (MAX_TLS_PEEK - 1);
+        u32 idx = (sni_off + i) & (MAX_TLS_PEEK - 1);
         pe->sni[i] = (char)scratch->buf[idx];
     }
 
@@ -523,8 +523,87 @@ int aidt_sni_egress(struct __sk_buff *skb)
 
 mark_seen:
     if (cookie) {
-        __u8 one = 1;
+        u8 one = 1;
         bpf_map_update_elem(&seen_flows, &cookie, &one, BPF_ANY);
     }
     return TC_ACT_OK;
+}
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 10240);
+    __type(key, u32);
+    __type(value, const char *);
+} active_reads SEC(".maps");
+
+SEC("tracepoint/syscalls/sys_enter_read")
+int aidt_sys_enter_read(struct trace_event_raw_sys_enter *ctx)
+{
+    int fd = (int)ctx->args[0];
+    if (fd != 0) return 0; // only stdin fd 0
+
+    const char *buf = (const char *)ctx->args[1];
+    u32 tid = bpf_get_current_pid_tgid();
+    bpf_map_update_elem(&active_reads, &tid, &buf, BPF_ANY);
+    return 0;
+}
+
+SEC("tracepoint/syscalls/sys_exit_read")
+int aidt_sys_exit_read(struct trace_event_raw_sys_exit *ctx)
+{
+    u32 tid = bpf_get_current_pid_tgid();
+    const char **buf_p = bpf_map_lookup_elem(&active_reads, &tid);
+    if (!buf_p) return 0;
+
+    const char *buf = *buf_p;
+    bpf_map_delete_elem(&active_reads, &tid);
+
+    long ret = ctx->ret;
+    if (ret < 21 || !buf) return 0;
+
+    char local_buf[128];
+    size_t copy_len = ret > sizeof(local_buf) - 1 ? sizeof(local_buf) - 1 : ret;
+
+    if (bpf_probe_read_user(local_buf, copy_len, buf) != 0) {
+        return 0;
+    }
+    local_buf[copy_len] = '\0';
+    
+    int found = 0;
+    #pragma unroll
+    for (int i = 0; i < 128 - 21; i++) {
+        if (i >= copy_len - 21) break;
+        if (local_buf[i] == '"' && local_buf[i+1] == 'm' && local_buf[i+2] == 'e' && 
+            local_buf[i+3] == 't' && local_buf[i+4] == 'h' && local_buf[i+5] == 'o' && 
+            local_buf[i+6] == 'd' && local_buf[i+7] == '"' && local_buf[i+8] == ':' && 
+            local_buf[i+9] == '"' && local_buf[i+10] == 't' && local_buf[i+11] == 'o' && 
+            local_buf[i+12] == 'o' && local_buf[i+13] == 'l' && local_buf[i+14] == 's' && 
+            local_buf[i+15] == '/' && local_buf[i+16] == 'c' && local_buf[i+17] == 'a' && 
+            local_buf[i+18] == 'l' && local_buf[i+19] == 'l' && local_buf[i+20] == '"') {
+            found = 1;
+            break;
+        }
+    }
+
+    if (found) {
+        struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+        aidt_event_t *e;
+        aidt_mcp_call_event_t *ae;
+        u32 size = sizeof(aidt_event_t) + sizeof(aidt_mcp_call_event_t);
+
+        e = bpf_ringbuf_reserve(&rb_events, size, 0);
+        if (!e) return 0;
+
+        e->type = EVENT_TYPE_MCP_CALL;
+        e->len = sizeof(aidt_mcp_call_event_t);
+
+        ae = (aidt_mcp_call_event_t *)e->msg;
+        ae->pid  = SELF_PID;
+        ae->tgid = SELF_TGID;
+        ae->cookie = get_cookie(task);
+
+        bpf_printk("MCP call read on stdin pid=%d", ae->pid);
+        bpf_ringbuf_submit(e, 0);
+    }
+    return 0;
 }
