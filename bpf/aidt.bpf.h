@@ -14,6 +14,7 @@ typedef enum aidt_event_type {
     EVENT_TYPE_CONNECT,
     EVENT_TYPE_SNI,
     EVENT_TYPE_MCP_CALL,
+    EVENT_TYPE_HTTP_SSE,
 } aidt_event_type_e;
 
 typedef enum aidt_conn_direction {
@@ -60,5 +61,21 @@ typedef struct aidt_mcp_call_event {
     u64 cookie;
     u32 fd;
 } aidt_mcp_call_event_t;
+
+typedef struct aidt_http_sse_event {
+    u32 pid;
+    u32 tgid;
+    u64 cookie;
+    u32 fd;
+    u8  direction;  // 0 = outgoing (client request), 1 = incoming (server received)
+    u8  _pad[3];
+    u32 saddr;
+    u32 daddr;
+    u16 sport;
+    u16 dport;
+    u16 family;
+    u16 _pad2;
+    char payload_snippet[256];
+} aidt_http_sse_event_t;
 
 #endif /* __EVENTS_H__ */

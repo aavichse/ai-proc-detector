@@ -601,3 +601,159 @@ int aidt_sys_enter_sendto(struct trace_event_raw_sys_enter *ctx)
     check_mcp_payload(fd, buf, count);
     return 0;
 }
+
+struct http_sse_scan_ctx {
+    struct sni_scratch *scratch;
+    u32 limit;
+    int found;
+};
+
+static long http_sse_scan_cb(u32 i, void *ctx_)
+{
+    struct http_sse_scan_ctx *ctx = ctx_;
+    if (i >= ctx->limit) return 1;
+
+    u32 idx = i & (MAX_TLS_PEEK - 1);
+    const u8 *b = ctx->scratch->buf;
+    if (b[idx] == 't' && b[(idx+1) & (MAX_TLS_PEEK-1)] == 'e' &&
+        b[(idx+2) & (MAX_TLS_PEEK-1)] == 'x' && b[(idx+3) & (MAX_TLS_PEEK-1)] == 't' &&
+        b[(idx+4) & (MAX_TLS_PEEK-1)] == '/' && b[(idx+5) & (MAX_TLS_PEEK-1)] == 'e' &&
+        b[(idx+6) & (MAX_TLS_PEEK-1)] == 'v' && b[(idx+7) & (MAX_TLS_PEEK-1)] == 'e' &&
+        b[(idx+8) & (MAX_TLS_PEEK-1)] == 'n' && b[(idx+9) & (MAX_TLS_PEEK-1)] == 't' &&
+        b[(idx+10) & (MAX_TLS_PEEK-1)] == '-' && b[(idx+11) & (MAX_TLS_PEEK-1)] == 's' &&
+        b[(idx+12) & (MAX_TLS_PEEK-1)] == 't' && b[(idx+13) & (MAX_TLS_PEEK-1)] == 'r' &&
+        b[(idx+14) & (MAX_TLS_PEEK-1)] == 'e' && b[(idx+15) & (MAX_TLS_PEEK-1)] == 'a' &&
+        b[(idx+16) & (MAX_TLS_PEEK-1)] == 'm') {
+        ctx->found = 1;
+        return 1;
+    }
+    return 0;
+}
+
+struct http_sse_copy_ctx {
+    struct sni_scratch *scratch;
+    aidt_http_sse_event_t *he;
+    u32 copy_len;
+};
+
+static long http_sse_copy_cb(u32 i, void *ctx_)
+{
+    struct http_sse_copy_ctx *ctx = ctx_;
+    if (i >= sizeof(ctx->he->payload_snippet)) return 1;
+    u32 idx = i & (MAX_TLS_PEEK - 1);
+    ctx->he->payload_snippet[i] = (i < ctx->copy_len) ? (char)ctx->scratch->buf[idx] : 0;
+    return 0;
+}
+
+static __always_inline void check_http_sse_payload(struct sock *sk, int fd, const char *buf, size_t count, u8 direction)
+{
+    if (count < 17 || !buf) return;
+
+    // bpf_printk("Checking payload for HTTP/SSE signature, fd=%d count=%d dir=%d", fd, count, direction);
+
+    u32 zero = 0;
+    struct sni_scratch *scratch = bpf_map_lookup_elem(&sni_scratch_map, &zero);
+    if (!scratch) return;
+
+    u32 copy_len = count > 255 ? 255 : (u32)count;
+    if (copy_len < 17) return;
+
+    if (bpf_probe_read_user(scratch->buf, copy_len, buf) != 0) {
+        return;
+    }
+
+    struct http_sse_scan_ctx sctx = {
+        .scratch = scratch,
+        .limit = copy_len - 17,
+        .found = 0,
+    };
+    bpf_loop(256, http_sse_scan_cb, &sctx, 0);
+
+    if (sctx.found) {
+        struct task_struct *task = bpf_get_current_task_btf();
+        aidt_event_t *e;
+        aidt_http_sse_event_t *he;
+        u32 size = sizeof(aidt_event_t) + sizeof(aidt_http_sse_event_t);
+
+        e = bpf_ringbuf_reserve(&rb_events, size, 0);
+        if (!e) return;
+
+        e->type = EVENT_TYPE_HTTP_SSE;
+        e->len = sizeof(aidt_http_sse_event_t);
+
+        he = (aidt_http_sse_event_t *)e->msg;
+        he->pid  = SELF_PID;
+        he->tgid = SELF_TGID;
+        he->cookie = get_cookie(task);
+        he->fd = fd;
+        he->direction = direction;
+
+        // 5-tuple from the socket. For outgoing we keep source/dest as-is;
+        // for incoming we swap to keep the convention saddr=local, daddr=peer.
+        if (sk) {
+            u16 family = BPF_CORE_READ(sk, __sk_common.skc_family);
+            he->family = family;
+            he->saddr  = BPF_CORE_READ(sk, __sk_common.skc_rcv_saddr);
+            he->daddr  = BPF_CORE_READ(sk, __sk_common.skc_daddr);
+            he->sport  = BPF_CORE_READ(sk, __sk_common.skc_num);   // host order
+            he->dport  = BPF_CORE_READ(sk, __sk_common.skc_dport); // net order
+        }
+
+        struct http_sse_copy_ctx cctx = {
+            .scratch = scratch,
+            .he = he,
+            .copy_len = copy_len,
+        };
+        bpf_loop(sizeof(he->payload_snippet), http_sse_copy_cb, &cctx, 0);
+
+        bpf_printk("HTTP/SSE detected on pid=%d", he->pid);
+        bpf_ringbuf_submit(e, 0);
+    }
+}
+
+SEC("fentry/tcp_sendmsg")
+int BPF_PROG(aidt_tcp_sendmsg, struct sock *sk, struct msghdr *msg, size_t size)
+{
+    if (size < 17) return 0;
+
+    struct iov_iter *iter = &msg->msg_iter;
+    u8 iter_type = BPF_CORE_READ(iter, iter_type);
+    void *iov_base = NULL;
+    
+    if (iter_type == 1 /* ITER_IOVEC */) {
+        const struct iovec *iov = BPF_CORE_READ(iter, __iov);
+        iov_base = BPF_CORE_READ(iov, iov_base);
+    } else if (iter_type == 0 /* ITER_UBUF */) {
+        iov_base = BPF_CORE_READ(iter, ubuf);
+    }
+
+    if (iov_base) {
+        check_http_sse_payload(sk, 0, (const char *)iov_base, size, 0 /* outgoing */);
+    }
+
+    return 0;
+}
+
+SEC("fexit/tcp_recvmsg")
+int BPF_PROG(aidt_tcp_recvmsg, struct sock *sk, struct msghdr *msg, size_t len,
+             int flags, int *addr_len, int ret)
+{
+    if (ret < 17) return 0;
+
+    struct iov_iter *iter = &msg->msg_iter;
+    u8 iter_type = BPF_CORE_READ(iter, iter_type);
+    void *iov_base = NULL;
+
+    if (iter_type == 1 /* ITER_IOVEC */) {
+        const struct iovec *iov = BPF_CORE_READ(iter, __iov);
+        iov_base = BPF_CORE_READ(iov, iov_base);
+    } else if (iter_type == 0 /* ITER_UBUF */) {
+        iov_base = BPF_CORE_READ(iter, ubuf);
+    }
+
+    if (iov_base) {
+        check_http_sse_payload(sk, 0, (const char *)iov_base, (size_t)ret, 1 /* incoming */);
+    }
+
+    return 0;
+}

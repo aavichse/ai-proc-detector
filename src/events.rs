@@ -9,6 +9,7 @@ pub enum AidtEventType {
     Connection = 2,
     Sni = 3,
     MCPCall = 4,
+    HttpSse = 5,
 }
 
 #[repr(C)]
@@ -53,6 +54,23 @@ pub struct AidtMCPCallEvent {
     pub tgid: u32,
     pub cookie: u64,
     pub fd: u32,
+}
+
+#[repr(C)]
+pub struct AidtHttpSseEvent {
+    pub pid: u32,
+    pub tgid: u32,
+    pub cookie: u64,
+    pub fd: u32,
+    pub direction: u8,
+    pub _pad: [u8; 3],
+    pub saddr: u32,
+    pub daddr: u32,
+    pub sport: u16,
+    pub dport: u16,
+    pub family: u16,
+    pub _pad2: u16,
+    pub payload_snippet: [u8; 256],
 }
 
 pub fn handle_event(data: &[u8]) -> i32 {
@@ -140,6 +158,21 @@ pub fn handle_event(data: &[u8]) -> i32 {
             let receivers = crate::proc::resolve_receiver(ae.pid, ae.fd).unwrap_or_default();
             
             log::info!("[MCP_CALL Sender] PID: {}, TGID: {}, Cookie: {}, Target FD: {}, Receiver PIDs: {:?}", ae.pid, ae.tgid, ae.cookie, ae.fd, receivers);
+        }
+        AidtEventType::HttpSse => {
+            if data.len() < std::mem::size_of::<AidtEvent>() + std::mem::size_of::<AidtHttpSseEvent>() {
+                return 0;
+            }
+            let he = unsafe { &*(payload_ptr as *const AidtHttpSseEvent) };
+            let snippet = String::from_utf8_lossy(&he.payload_snippet).trim_end_matches('\0').to_string();
+            let dir_str = if he.direction == 0 { "OUT" } else { "IN" };
+            let saddr = Ipv4Addr::from(u32::from_be(he.saddr));
+            let daddr = Ipv4Addr::from(u32::from_be(he.daddr));
+            
+            log::info!("[HTTP/SSE {}] PID: {}, TGID: {}, {}:{} -> {}:{}, Payload: {}", 
+                dir_str, he.pid, he.tgid,
+                saddr, he.sport, daddr, u16::from_be(he.dport),
+                snippet.escape_debug());
         }
     }
 
