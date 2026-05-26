@@ -1,0 +1,38 @@
+# docker build -t ai-detector-builder -f docker/Dockerfile.build .
+# docker run --rm -v $(pwd):/workspace -v /sys/kernel/btf/vmlinux:/sys/kernel/btf/vmlinux:ro ai-detector-builder make all
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build dependencies: Clang, LLVM, libbpf, and common build tools
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    clang \
+    llvm \
+    lld \
+    libbpf-dev \
+    pkg-config \
+    libelf-dev \
+    curl \
+    git \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install a static bpftool directly
+RUN curl -L https://github.com/libbpf/bpftool/releases/download/v7.4.0/bpftool-v7.4.0-amd64.tar.gz \
+    | tar xz -C /usr/local/bin bpftool \
+    && chmod +x /usr/local/bin/bpftool
+
+# Install Rust toolchain
+ENV RUSTUP_HOME=/usr/local/rustup \
+    CARGO_HOME=/usr/local/cargo \
+    PATH=/usr/local/cargo/bin:$PATH
+
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y && \
+    chmod -R a+w $RUSTUP_HOME $CARGO_HOME
+
+# Install libbpf-cargo for generating the Rust skel
+RUN cargo install libbpf-cargo
+
+WORKDIR /workspace
+
