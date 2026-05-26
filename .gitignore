@@ -1,0 +1,8 @@
+.aider*
+target/
+.cargo-registry/
+Cargo.lock
+*.log
+bpf/vmlinux.h
+bpf/*.o
+bpf/*.skel*
